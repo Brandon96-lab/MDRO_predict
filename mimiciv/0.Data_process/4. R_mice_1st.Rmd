@@ -1,0 +1,183 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(VIM)
+library(naniar)
+library(ggplot2)
+```
+
+
+```{r}
+library(mice)
+```
+
+```{r}
+mdro = read.csv('mdro_tomice.csv')
+```
+
+```{r}
+head(mdro)
+```
+
+```{r}
+summary(mdro)
+```
+```{r}
+mdro[mdro$los_hosp_beforeicu < 0,'los_hosp_beforeicu'] <- 0
+```
+
+```{r}
+noquote(colnames(mdro))
+```
+
+##定义一个函数，可以查看直方图以及异常值
+```{r}
+hist_outlier_all <- function (x,i) {
+  names_list = noquote(colnames(x))
+  x_na <- na.omit(x[,names_list[i]])
+  hist(x_na, main=" ",xlab=names_list[i])
+  title(paste("Histogram of ",names_list[i],sep = ""))
+  abline(v=c(mean(x_na)+3*sd(x_na),mean(x_na)-3*sd(x_na)),lty=2,col='red')
+  abline(v=mean(x_na),lty=1,col="red")
+} 
+
+```
+
+```{r}
+hist_outlier <- function (x) {
+  
+  x_na <- na.omit(x)
+  hist(x_na, main=" ",xlab=deparse(substitute(x)))
+  title(paste("Histogram of ",deparse(substitute(x)),sep = ""))
+  abline(v=c(mean(x_na)+3*sd(x_na),mean(x_na)-3*sd(x_na)),lty=2,col='red')
+  abline(v=mean(x_na),lty=1,col="red")
+}
+```
+
+
+```{r}
+for (i in c(32:76)){
+  hist_outlier_all(mdro,i)
+}
+```
+
+
+```{r}
+# box plot (1.5 IQR)
+boxplot(mdro$sofa)
+
+```
+
+```{r}
+# visualize missingness
+
+# with naniar
+gg_miss_upset(mdro)
+```
+```{r}
+# with package VIM
+#运行时间较长，先隐掉
+#aggr(mdro, numbers = TRUE,  prop = c(TRUE, FALSE), combined = F,  sortVars = F,  labels = names(mdro),   cex.axis=.7, gap=3, ylab = c("Histogram of missing data", "Pattern"))
+```
+
+```{r}
+marginplot(mdro[,c('ph','spo2')])
+```
+
+```{r}
+names(mdro)
+```
+
+
+```{r}
+#单核运行mice
+
+#选择需要拿来插补的列
+varlist <- names(mdro)[c(2:166)]
+
+
+#需要转化为因子的列
+factor_list <- c(c('gender', 'race','previous_mdrpos_lessthan90d','previous_mdrneg_lessthan90d','last_careunit','ant_1stday','immu_1stday','vaso_1stday','surgical',
+'invasive_line_1stday','ventilation_1stday',"ent_nut","par_nut",'gcs_unable','hospital_expire_flag'),c(names(mdro)[c(12:22)]), c(names(mdro)[c(23:42)]), c(names(mdro)[c(87:140)]))
+```
+
+```{r}
+factor_list
+```
+
+```{r}
+length(varlist)
+```
+
+```{r}
+#trauma_data[,! names(trauma_data) %in% varlist]
+#不需要进行插补的列组成的数据框
+keep_data = mdro[,-which(names(mdro) %in% varlist)]
+```
+
+
+```{r}
+df_toimp = mdro[,varlist]
+for (i in factor_list){
+  df_toimp[,i] = factor(df_toimp[,i])
+}
+```
+
+
+```{r}
+# see all the default settings for imputation
+impu_default <- mice(df_toimp, maxit = 0)
+summary(impu_default)
+```
+
+```{r}
+# see the predictor structure
+pred <- quickpred(df_toimp)#, exclude = c("ID","Time_death")
+print(pred)
+
+# imputation method
+meth <- impu_default$meth
+print(meth)    
+# imputation method can be changed manually
+```
+
+```{r}
+# single imputation (m=1)
+
+imputation_once <- mice(df_toimp, maxit = 100, m = 1, seed = 2021, pred = pred, meth = meth, print = TRUE)
+
+```
+
+```{r}
+data_single <- mice::complete(imputation_once, 1)
+```
+
+```{r}
+sum(is.na(data_single))
+```
+
+```{r}
+summary(data_single)
+```
+
+```{r}
+#拼接插补后的数据和之前保留的数据
+mdro_afterimp = cbind(keep_data,data_single)
+write.table(mdro_afterimp,"MDRO_AFTERIMP_Rmice.csv",row.names=FALSE,col.names=TRUE,sep=",")
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

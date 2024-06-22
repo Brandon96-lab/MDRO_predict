@@ -1,0 +1,293 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(readxl)
+library(dplyr)
+library(forcats)
+library(ggplot2)
+library(readr)
+extval_probability <- read_csv('MIMICIV_posibility_revise.csv')
+```
+
+```{r}
+library('egg')
+```
+
+```{r}
+extval_probability
+```
+
+AUROC及置信区间
+```{r}
+library(pROC)
+```
+
+```{r}
+roc.list <- roc(gramtot_true~gramtot_lr_prob+gramtot_knn_prob+gramtot_svc_prob+gramtot_rf_prob+gramtot_xgb_prob+gramtot_mlp_prob+gramtot_ensemble_prob, data = extval_probability)
+ci.list <- lapply(roc.list, ci.se, specificities = seq(0, 1, l = 100))
+```
+
+```{r}
+data.ci.list <- lapply(ci.list, function(ciobj) 
+  data.frame(x = as.numeric(rownames(ciobj)),
+             lower = ciobj[, 1],
+             upper = ciobj[, 3]))
+```
+
+```{r}
+auc_ci <- vector(mode="list", 4)
+names(auc_ci) <- c("scores","auc", "upper", "lower")
+for (i in colnames(extval_probability[,-1])){
+  auc_3p <- roc(extval_probability$gramtot_true,extval_probability[[i]],ci = TRUE)
+  auc_ci[['scores']] <- c(auc_ci[['scores']],i)
+  auc_ci[['auc']] <- c(auc_ci[['auc']],auc_3p$auc[1]); 
+  auc_ci[['upper']] <- c(auc_ci[['upper']],auc_3p$ci[3]); 
+  auc_ci[['lower']] <- c(auc_ci[['lower']],auc_3p$ci[1])
+}
+```
+```{r}
+auc_ci_df <- as.data.frame(auc_ci)
+auc_ci_df$auc <- round(auc_ci_df$auc,3)
+auc_ci_df$upper <- round(auc_ci_df$upper,3)
+auc_ci_df$lower <- round(auc_ci_df$lower,3)
+auc_ci_df
+write.csv(auc_ci_df, 'auc_ci_MIMICIV_MDRO_models_revise.csv')
+```
+
+
+```{r}
+p <- ggroc(roc.list,size = 0.3,legacy.axes = TRUE) + theme_article() + geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=1, color = "grey") + coord_equal()
+
+colors  = c('#bf0c0c','#9748a8','#ffc600','#47bc00','#165b65','#f9886c','#3887be')
+for(i in 1:7) {
+  data0 = data.ci.list[[i]]
+  data0$x = 1- data0$x
+  data = data0[order(data0[,1],decreasing=T),]
+  
+  p <- p + geom_ribbon(
+    data = data,
+    aes(x = x, ymin = lower, ymax = upper),
+    fill =  colors[i],
+    alpha = 0.1,
+    inherit.aes = F) 
+  
+  p <- p + theme(legend.justification=c(1,0),
+                 legend.position=c(1,0),
+                 legend.text=element_text(size=14),
+                 legend.key.height=unit(1.2,"line"),
+                 axis.text.x = element_text(size=10),
+                 axis.text.y = element_text(size=10),
+                 axis.title.y=element_text(size=13),
+                 axis.title.x=element_text(size=13)) + 
+    
+    scale_colour_manual(
+                  values = colors,
+                  name="",
+                  breaks=c("gramtot_lr_prob","gramtot_knn_prob","gramtot_svc_prob", "gramtot_rf_prob", "gramtot_xgb_prob", "gramtot_mlp_prob",'gramtot_ensemble_prob'),
+                  labels=c("lr  AUC: 0.717","knn  AUC: 0.700","svc  AUC: 0.675", "rf  AUC: 0.748", "xgb  AUC: 0.737", "mlp  AUC: 0.704","ensemble  AUC: 0.744"))
+} 
+p
+```
+
+
+```{r}
+pdf("ROC_MIMICIV_MDRO_models_revise.pdf", bg="white",width=5,height=5)
+p
+dev.off()
+```
+
+```{r}
+library(CalibrationCurves)
+```
+```{r}
+extval_probability$gramtot_true
+```
+
+```{r}
+help(valProbggplot)
+```
+
+
+```{r}
+calibration_plot <- valProbggplot(
+  p = extval_probability$gramtot_ensemble_prob,
+  y = extval_probability$gramtot_true,
+  CL.smooth = TRUE, 
+  logistic.cal = TRUE,
+  lty.log = 2, col.log = "lightblue", lwd.log = 1.5,xlim = c(0, 0.85), ylim = c(0, 1),col.ideal = "skyblue",col.smooth = 'black',
+  dostats = FALSE
+  #scale_color_manual(values = c("black", "#3887be", "skyblue", "lightblue"))
+)
+calibration_plot
+```
+
+```{r}
+help(valProbggplot)
+```
+
+```{r}
+calibration_plot$stats
+```
+
+```{r}
+calibration_plot$Calibration
+```
+```{r}
+# 安装boot包（如果尚未安装）
+if (!require("boot")) {
+  install.packages("boot")
+}
+
+# 加载boot包
+library(boot)
+```
+
+```{r}
+# 计算Brier得分
+brier_score <- function(predictions, outcomes) {
+  mean((predictions - outcomes) ^ 2)
+}
+bscore <- brier_score(extval_probability$gramtot_ensemble_prob,extval_probability$gramtot_true)
+# 使用自助法计算置信区间
+bootstrap_brier <- function(data, indices) {
+  d <- data[indices, ]
+  brier_score(d$gramtot_ensemble_prob, d$gramtot_true)
+}
+
+# 运行自助法
+set.seed(2023)  # 设置随机数种子以获得可重现的结果
+boot_results <- boot(extval_probability, statistic = bootstrap_brier, R = 10000)
+
+# 计算置信区间
+ci <- boot.ci(boot_results, type = "perc")
+
+# 输出结果
+cat("Brier Score:", bscore, "\n")
+cat("95% Confidence Interval:", ci$perc[4], "-", ci$perc[5], "\n")
+```
+
+```{r}
+ggplot_obj <- calibration_plot$ggPlot
+ggplot_obj <- ggplot_obj +
+  theme_classic(base_size = 14) +  # 使用经典主题
+  theme(
+    text = element_text(family = "sans"),
+    plot.title = element_text(face = "bold", size = 16),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom",
+    legend.background = element_blank(),
+    legend.key = element_blank()
+  ) +
+  labs(
+    title = NULL,#"Calibration Curve",
+    x = "Predicted Probability",
+    y = "Observed Proportion",
+    colour = ""
+  ) +
+#  scale_color_manual(values = c("black", "#3887be", "skyblue", "lightblue"))+
+ # scale_color_manual(values = c("black", "purple", "black","steelblue"))
+geom_segment(aes(x = 0, y = 0, xend = 0.8, yend = 0.8),color = 'skyblue',  size = 1)
+# 打印定制后的图形
+print(ggplot_obj)
+```
+
+```{r}
+pdf("Cali_MIMICIV_MDRO_models_revise.pdf", bg="white",width=8,height=6)
+ggplot_obj
+dev.off()
+```
+
+```{r}
+library(rmda)
+```
+
+```{r}
+colnames(extval_probability)
+```
+
+```{r}
+dca_lr<-decision_curve(gramtot_true ~ gramtot_lr_prob,
+                        data = extval_probability,family = binomial(link ='logit'),
+                        thresholds = seq(0,1, by = 0.01),
+                        confidence.intervals= 0.95,
+                        study.design = 'case-control',
+                        population.prevalence = 0.12)
+
+dca_knn<-decision_curve(gramtot_true ~ gramtot_knn_prob,
+                        data = extval_probability,family = binomial(link ='logit'),
+                        thresholds = seq(0,1, by = 0.01),
+                        confidence.intervals= 0.95,
+                        study.design = 'case-control',
+                        population.prevalence = 0.12)
+
+dca_svc<-decision_curve(gramtot_true ~ gramtot_svc_prob,
+                        data = extval_probability,family = binomial(link ='logit'),
+                        thresholds = seq(0,1, by = 0.01),
+                        confidence.intervals= 0.95,
+                        study.design = 'case-control',
+                        population.prevalence = 0.12)
+
+dca_rf<-decision_curve(gramtot_true ~ gramtot_rf_prob,
+                        data = extval_probability,family = binomial(link ='logit'),
+                        thresholds = seq(0,1, by = 0.01),
+                        confidence.intervals= 0.95,
+                        study.design = 'case-control',
+                        population.prevalence = 0.12)
+
+dca_xgb<-decision_curve(gramtot_true ~ gramtot_xgb_prob,
+                        data = extval_probability,family = binomial(link ='logit'),
+                        thresholds = seq(0,1, by = 0.01),
+                        confidence.intervals= 0.95,
+                        study.design = 'case-control',
+                        population.prevalence = 0.12)
+
+dca_mlp<-decision_curve(gramtot_true ~ gramtot_mlp_prob,
+                        data = extval_probability,family = binomial(link ='logit'),
+                        thresholds = seq(0,1, by = 0.01),
+                        confidence.intervals= 0.95,
+                        study.design = 'case-control',
+                        population.prevalence = 0.12)
+
+dca_ensemble<-decision_curve(gramtot_true ~ gramtot_ensemble_prob,
+                        data = extval_probability,family = binomial(link ='logit'),
+                        thresholds = seq(0,1, by = 0.01),
+                        confidence.intervals= 0.95,
+                        study.design = 'case-control',
+                        population.prevalence = 0.12)
+```
+
+
+```{r}
+List<- list(dca_lr,dca_knn,dca_svc,dca_rf,dca_xgb,dca_mlp,dca_ensemble)
+
+pdf("DCA_MIMICIV_MDRO_models_revise.pdf", bg="white",width=6,height=5)
+plot_decision_curve(List,
+                    curve.names=c('lr','knn', 'svc','rf','xgb','mlp','ensemble'),
+                    cost.benefit.axis =FALSE,col= colors,
+                    confidence.intervals=FALSE, 
+                    standardize = T)
+dev.off()
+```
+
+```{r}
+plot_clinical_impact(dca_ensemble,population.size = 500,cost.benefit.axis = T,
+n.cost.benefits= 8,col = '#3887be',
+confidence.intervals= F)
+```
+
+```{r}
+help(plot_decision_curve)
+```
+
+
+
